@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Financial Analyst</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom scrollbar styling for the output box */
+        #output-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        #output-container::-webkit-scrollbar-thumb {
+            background-color: #3b82f6; /* Blue 500 */
+            border-radius: 4px;
+        }
+        #output-container::-webkit-scrollbar-track {
+            background: #e5e7eb; /* Gray 200 */
+        }
+        .text-inter { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-start justify-center p-4 text-inter">
+
+    <div class="w-full max-w-4xl bg-white shadow-2xl rounded-xl p-6 md:p-10 mt-6">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-gray-900 mb-2">
+                <span class="text-blue-600">AI</span> Financial Analyst
+            </h1>
+            <p class="text-gray-600">Get grounded, up-to-date analysis powered by Gemini and Google Search.</p>
+        </header>
+
+        <!-- Input and Control Area -->
+        <div class="mb-8 p-6 bg-blue-50 border border-blue-200 rounded-lg shadow-inner">
+            <label for="query-input" class="block text-xl font-semibold text-gray-700 mb-3">
+                What stock or company would you like to analyze?
+            </label>
+            <textarea
+                id="query-input"
+                class="w-full p-4 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150 ease-in-out resize-none h-24 text-gray-800"
+                placeholder="Example: Summarize the latest Q3 earnings report for NVDA and analyze market reaction."
+            ></textarea>
+            
+            <button
+                id="analyze-button"
+                class="w-full mt-4 px-6 py-3 bg-blue-600 text-white font-bold rounded-lg shadow-md hover:bg-blue-700 transition duration-200 ease-in-out transform hover:scale-[1.01] focus:outline-none focus:ring-4 focus:ring-blue-500 focus:ring-opacity-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                onclick="analyzeStock()"
+            >
+                Start Analysis
+            </button>
+        </div>
+
+        <!-- Loading Indicator -->
+        <div id="loading-spinner" class="hidden text-center p-6">
+            <div class="animate-spin inline-block w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full" role="status">
+                <span class="sr-only">Loading...</span>
+            </div>
+            <p class="mt-3 text-blue-600 font-medium">Fetching the latest data and generating analysis...</p>
+        </div>
+
+        <!-- Output Area -->
+        <div id="results-section" class="hidden">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">Analysis Results</h2>
+            
+            <!-- Analysis Text Output -->
+            <div id="output-container" class="bg-gray-50 p-6 rounded-lg border border-gray-200 max-h-96 overflow-y-auto shadow-inner mb-6">
+                <p id="analysis-output" class="text-gray-700 whitespace-pre-wrap"></p>
+            </div>
+
+            <!-- Sources/Citations -->
+            <div id="sources-container" class="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <h3 class="text-lg font-semibold text-gray-700 mb-2 flex items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 text-yellow-600" viewBox="0 0 20 20" fill="currentColor">
+                      <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                    </svg>
+                    Sources Used for Grounding
+                </h3>
+                <ul id="sources-list" class="space-y-1 text-sm text-gray-600">
+                    <!-- Sources will be injected here -->
+                </ul>
+            </div>
+        </div>
+        
+        <!-- Error Message -->
+        <div id="error-message" class="hidden p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg mt-6" role="alert">
+            <strong class="font-bold">Error:</strong>
+            <span id="error-text" class="block sm:inline">Could not complete the analysis. Please check your query and try again.</span>
+        </div>
+    </div>
+
+    <script>
+        const API_KEY = ""; // Placeholder for Canvas environment injection
+        const MODEL_NAME = 'gemini-2.5-flash-preview-09-2025';
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`;
+        
+        // DOM Elements
+        const queryInput = document.getElementById('query-input');
+        const analyzeButton = document.getElementById('analyze-button');
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const resultsSection = document.getElementById('results-section');
+        const analysisOutput = document.getElementById('analysis-output');
+        const sourcesList = document.getElementById('sources-list');
+        const errorMessage = document.getElementById('error-message');
+        const errorText = document.getElementById('error-text');
+
+        // Utility for base64 encoding/decoding and exponential backoff
+        function base64ToArrayBuffer(base64) {
+            const binary_string = window.atob(base64);
+            const len = binary_string.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binary_string.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        async function fetchWithBackoff(url, options, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (response.status === 429) {
+                        if (i < maxRetries - 1) {
+                            const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                            continue; // Retry
+                        }
+                    }
+                    if (!response.ok) {
+                        const errorBody = await response.json().catch(() => ({}));
+                        throw new Error(`API call failed: ${response.status} ${response.statusText} - ${JSON.stringify(errorBody)}`);
+                    }
+                    return response;
+                } catch (error) {
+                    if (i === maxRetries - 1) throw error; // Throw after last retry
+                    const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+            throw new Error("Maximum retries reached.");
+        }
+
+        async function analyzeStock() {
+            const userQuery = queryInput.value.trim();
+            if (!userQuery) {
+                // Use a temporary visual message instead of alert()
+                showTemporaryMessage("Please enter a query for analysis.", 'red');
+                return;
+            }
+
+            // Reset UI and show loading
+            analysisOutput.textContent = '';
+            sourcesList.innerHTML = '';
+            resultsSection.classList.add('hidden');
+            errorMessage.classList.add('hidden');
+            loadingSpinner.classList.remove('hidden');
+            analyzeButton.disabled = true;
+
+            const systemPrompt = "You are a world-class, professional financial analyst. Your task is to provide a concise, single-paragraph summary of the key findings, company performance, and market outlook based on the latest available web data. Do not use markdown headers (e.g., #, ##).";
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ "google_search": {} }], // Enable Google Search grounding
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+                // Requesting a slightly shorter, punchier response suitable for analysis
+                config: {
+                    maxOutputTokens: 2048,
+                    temperature: 0.2
+                }
+            };
+
+            try {
+                const response = await fetchWithBackoff(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                const candidate = result.candidates?.[0];
+
+                if (candidate && candidate.content?.parts?.[0]?.text) {
+                    const text = candidate.content.parts[0].text;
+                    
+                    // 1. Display the generated text
+                    analysisOutput.textContent = text; 
+                    resultsSection.classList.remove('hidden');
+
+                    // 2. Extract and display grounding sources
+                    let sources = [];
+                    const groundingMetadata = candidate.groundingMetadata;
+                    
+                    if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                        sources = groundingMetadata.groundingAttributions
+                            .map(attribution => ({
+                                uri: attribution.web?.uri,
+                                title: attribution.web?.title,
+                            }))
+                            .filter(source => source.uri && source.title);
+
+                        sources.forEach((source, index) => {
+                            const li = document.createElement('li');
+                            li.innerHTML = `
+                                <a href="${source.uri}" target="_blank" class="text-blue-600 hover:text-blue-800 hover:underline transition duration-150 ease-in-out font-medium">
+                                    ${index + 1}. ${source.title}
+                                </a>
+                                <span class="text-xs text-gray-500 ml-2">(${new URL(source.uri).hostname})</span>
+                            `;
+                            sourcesList.appendChild(li);
+                        });
+                        
+                        if (sources.length === 0) {
+                            sourcesList.innerHTML = '<li class="text-gray-500">No specific web sources were cited for this response.</li>';
+                        }
+                    } else {
+                         sourcesList.innerHTML = '<li class="text-gray-500">No specific web sources were cited for this response.</li>';
+                    }
+
+                } else {
+                    errorText.textContent = "The model did not return a valid analysis. Please try a different query.";
+                    errorMessage.classList.remove('hidden');
+                }
+
+            } catch (error) {
+                console.error("API Call Error:", error);
+                errorText.textContent = `A network or API error occurred: ${error.message}.`;
+                errorMessage.classList.remove('hidden');
+            } finally {
+                loadingSpinner.classList.add('hidden');
+                analyzeButton.disabled = false;
+            }
+        }
+
+        // Simple function to show a temporary message box (replaces alert)
+        function showTemporaryMessage(message, color) {
+            const tempDiv = document.createElement('div');
+            tempDiv.className = `fixed top-4 right-4 p-4 rounded-lg shadow-xl text-white font-semibold transition-opacity duration-300 z-50`;
+            
+            if (color === 'red') {
+                tempDiv.classList.add('bg-red-500');
+            } else {
+                tempDiv.classList.add('bg-blue-500');
+            }
+
+            tempDiv.textContent = message;
+            document.body.appendChild(tempDiv);
+
+            setTimeout(() => {
+                tempDiv.style.opacity = '0';
+                tempDiv.addEventListener('transitionend', () => tempDiv.remove());
+            }, 3000);
+        }
+
+    </script>
+</body>
+</html>
